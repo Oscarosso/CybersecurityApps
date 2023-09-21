@@ -4,8 +4,8 @@ import os
 import re
 import json
 import sys
-from xml.etree import ElementTree
 import csv
+from xml.etree import ElementTree
 
 # Define the chapters and their associated event codes
 chapters = {
@@ -30,25 +30,31 @@ def check_event_codes(file_path):
 
         if file_extension == ".txt" or file_extension == ".log":
             with open(file_path, "r") as log_file:
-                log_data = log_file.read()
-                results = []
-
+                log_data = log_file.readlines()
+                results = {}
                 for chapter, event_codes in chapters.items():
-                    for event_code in event_codes:
-                        count = len(re.findall(fr"EventCode\s*=\s*{event_code}", log_data))
-                        results.append([chapter, event_code, count])
+                    chapter_lines = []
+                    for line in log_data:
+                        for event_code in event_codes:
+                            if re.search(fr"EventCode\s*=\s*{event_code}", line):
+                                chapter_lines.append(line.strip())
+                    if chapter_lines:
+                        results[chapter] = chapter_lines
                 
                 return results
 
         elif file_extension == ".json":
             with open(file_path, "r") as json_file:
                 log_data = json.load(json_file)
-                results = []
-
+                results = {}
                 for chapter, event_codes in chapters.items():
-                    for event_code in event_codes:
-                        count = len([entry for entry in log_data if "EventCode" in entry and entry["EventCode"] == event_code])
-                        results.append([chapter, event_code, count])
+                    chapter_lines = []
+                    for entry in log_data:
+                        for event_code in event_codes:
+                            if "EventCode" in entry and entry["EventCode"] == event_code:
+                                chapter_lines.append(entry)
+                    if chapter_lines:
+                        results[chapter] = chapter_lines
 
                 return results
 
@@ -57,20 +63,20 @@ def check_event_codes(file_path):
 
             try:
                 with open(file_path, "rb") as evtx_file:
-                    results = []
+                    results = {}
                     for chapter, event_codes in chapters.items():
-                        for event_code in event_codes:
-                            try:
-                                count = 0
-                                for _, elem in ElementTree.iterparse(evtx_file):
-                                    if elem.tag.endswith("Event"):
-                                        event_id = elem.find(".//EventID").text
-                                        if event_id == event_code:
-                                            count += 1
-                                        elem.clear()
-                                results.append([chapter, event_code, count])
-                            except ParseError:
-                                pass
+                        chapter_lines = []
+                        try:
+                            for _, elem in ElementTree.iterparse(evtx_file):
+                                if elem.tag.endswith("Event"):
+                                    event_id = elem.find(".//EventID").text
+                                    if event_id in event_codes:
+                                        chapter_lines.append(ElementTree.tostring(elem, encoding="utf-8").decode())
+                                    elem.clear()
+                            if chapter_lines:
+                                results[chapter] = chapter_lines
+                        except ParseError:
+                            pass
 
                     return results
             except Exception as e:
@@ -82,27 +88,28 @@ def check_event_codes(file_path):
     except Exception as e:
         return str(e)
 
-# Function to generate CSV file with overview of results
-def generate_overview_csv(results):
-    with open("overview_results.csv", "w", newline="") as csv_file:
-        csv_writer = csv.writer(csv_file)
-        csv_writer.writerow(["Chapter Name", "Event ID", "Event Count"])
-        for result in results:
-            csv_writer.writerow(result)
+# Function to generate CSV files for each chapter
+def generate_chapter_csv(results, folder_name, analyzed_filename):
+    for chapter, chapter_lines in results.items():
+        chapter_filename = f"{analyzed_filename}-{chapter.replace(' ', '_')}-chaptercount.csv"
+        with open(os.path.join(folder_name, chapter_filename), "w", newline="") as csv_file:
+            csv_writer = csv.writer(csv_file)
+            csv_writer.writerow(["Full Log Line"])
+            for line in chapter_lines:
+                csv_writer.writerow([line])
 
-# Function to generate CSV file with unique event IDs and descriptions
-def generate_unique_event_ids_csv(results):
-    unique_event_ids = {}
-    for result in results:
-        chapter, event_id, _ = result
-        if event_id not in unique_event_ids:
-            unique_event_ids[event_id] = chapter
-
-    with open("unique_event_ids.csv", "w", newline="") as csv_file:
+# Function to generate a CSV file for event lines
+def generate_event_lines_csv(results, folder_name, analyzed_filename):
+    event_lines = []
+    for chapter_lines in results.values():
+        event_lines.extend(chapter_lines)
+    
+    event_filename = f"{analyzed_filename}-eventlines.csv"
+    with open(os.path.join(folder_name, event_filename), "w", newline="") as csv_file:
         csv_writer = csv.writer(csv_file)
-        csv_writer.writerow(["Event ID", "Description"])
-        for event_id, description in unique_event_ids.items():
-            csv_writer.writerow([event_id, description])
+        csv_writer.writerow(["Full Log Line"])
+        for line in event_lines:
+            csv_writer.writerow([line])
 
 # Check if a filename argument is provided
 if len(sys.argv) != 2:
@@ -112,12 +119,19 @@ if len(sys.argv) != 2:
 # Get the log file path from the command-line argument
 log_file_path = sys.argv[1]
 
+# Extract the analyzed filename (without extension)
+analyzed_filename = os.path.splitext(os.path.basename(log_file_path))[0]
+
+# Create a folder to store the results
+folder_name = f"{analyzed_filename}_results"
+os.makedirs(folder_name, exist_ok=True)
+
 # Call the function to check event codes in the log file
 results = check_event_codes(log_file_path)
 
-# Generate CSV files
-generate_overview_csv(results)
-generate_unique_event_ids_csv(results)
+# Generate CSV files for each chapter and event lines
+generate_chapter_csv(results, folder_name, analyzed_filename)
+generate_event_lines_csv(results, folder_name, analyzed_filename)
 
-# Print the results
-print("Overview results CSV file and Unique event IDs CSV file generated.")
+# Print a message indicating the CSV files generated
+print(f"Chapter-specific CSV files and event lines CSV file generated in the '{folder_name}' folder.")
